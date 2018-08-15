@@ -9,6 +9,9 @@ from torch.distributions import Bernoulli
 from torch.autograd import Variable
 from itertools import count
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 class PGN(nn.Module):
     def __init__(self):
@@ -24,23 +27,74 @@ class PGN(nn.Module):
         return x
 
 
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+class CartAgent(object):
+    def __init__(self, learning_rate, gamma):
+        self.pgn = PGN()
+        self.gamma = gamma
 
-    # 超参数
+        self._init_memory()
+        self.optimizer = torch.optim.RMSprop(self.pgn.parameters(), lr=learning_rate)
+
+    def memorize(self, state, action, reward):
+        # save to memory for mini-batch gradient descent
+        self.state_pool.append(state)
+        self.action_pool.append(action)
+        self.reward_pool.append(reward)
+        self.steps += 1
+
+    def learn(self):
+        self._adjust_reward()
+
+        # policy gradient
+        self.optimizer.zero_grad()
+        for i in range(self.steps):
+            # all steps in multi games 
+            state = self.state_pool[i]
+            action = torch.FloatTensor([self.action_pool[i]])
+            reward = self.reward_pool[i]
+
+            probs = self.act(state)
+            m = Bernoulli(probs)
+            loss = -m.log_prob(action) * reward
+            loss.backward()
+        self.optimizer.step()
+        
+        self._init_memory()
+
+    def act(self, state):
+        return self.pgn(state) 
+
+    def _init_memory(self):
+        self.state_pool = []
+        self.action_pool = []
+        self.reward_pool = []
+        self.steps = 0
+
+    def _adjust_reward(self):
+        # backward weight
+        running_add = 0
+        for i in reversed(range(self.steps)):
+            if self.reward_pool[i] == 0:
+                running_add = 0
+            else:
+                running_add = running_add * self.gamma + self.reward_pool[i]
+                self.reward_pool[i] = running_add
+
+        # normalize reward
+        reward_mean = np.mean(self.reward_pool)
+        reward_std = np.std(self.reward_pool)
+        for i in range(self.steps):
+            self.reward_pool[i] = (self.reward_pool[i] - reward_mean) / reward_std
+
+
+def train():
+    # hyper parameter
     BATCH_SIZE = 5
     LEARNING_RATE = 0.01
     GAMMA = 0.99
 
     env = gym.make('CartPole-v1')
-    pgn = PGN()
-    optimizer = torch.optim.RMSprop(pgn.parameters(), lr=LEARNING_RATE)
-
-    state_pool = []
-    action_pool = []
-    reward_pool = []
-    steps = 0
+    cart_agent = CartAgent(learning_rate=LEARNING_RATE, gamma=GAMMA)
 
     num_episodes = 500
     for i_episode in range(num_episodes):
@@ -48,11 +102,9 @@ if __name__ == '__main__':
         env.render(mode='rgb_array')
 
         for t in count():
-            state = next_state
-            state = torch.from_numpy(state).float()
-            state = Variable(state)
+            state = torch.from_numpy(next_state).float()
 
-            probs = pgn(state)
+            probs = cart_agent.act(state)
             m = Bernoulli(probs)
             action = m.sample()
 
@@ -60,54 +112,20 @@ if __name__ == '__main__':
             next_state, reward, done, _ = env.step(action)
             env.render(mode='rgb_array')
 
-            # 让终止action的reward为0
+            # end action's reward equals 0
             if done:
                 reward = 0
 
-            # 缓存state、action、reward和步数
-            state_pool.append(state)
-            action_pool.append(action)
-            reward_pool.append(reward)
-            steps += 1
+            cart_agent.memorize(state, action, reward)
 
             if done:
                 logger.info({'Episode {}: durations {}'.format(i_episode, t)})
                 break
 
-        # 按照Batch Size更新代码
+        # update parameter every batch size
         if i_episode > 0 and i_episode % BATCH_SIZE == 0:
-            # 根据某次action之后所有特定action的reward，提升当前reward
-            running_add = 0
-            for i in reversed(range(steps)):
-                if reward_pool[i] == 0:
-                    running_add = 0
-                else:
-                    running_add = running_add * GAMMA + reward_pool[i]
-                    reward_pool[i] = running_add
+            cart_agent.learn()
 
-            # 均一化reward
-            reward_mean = np.mean(reward_pool)
-            reward_std = np.std(reward_pool)
-            for i in range(steps):
-                reward_pool[i] = (reward_pool[i] - reward_mean) / reward_std
 
-            # Policy Gradient
-            optimizer.zero_grad()
-
-            for i in range(steps):
-                # 某次游戏一共进行了steps步
-                state = state_pool[i]
-                action = Variable(torch.FloatTensor([action_pool[i]]))
-                reward = reward_pool[i]
-
-                probs = pgn(state)
-                m = Bernoulli(probs)
-                loss = -m.log_prob(action) * reward
-                loss.backward()
-
-            optimizer.step()
-
-            state_pool = []
-            action_pool = []
-            reward_pool = []
-            steps = 0
+if __name__ == '__main__':
+    train()
