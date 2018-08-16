@@ -92,12 +92,12 @@ def train():
     BATCH_SIZE = 5
     LEARNING_RATE = 0.01
     GAMMA = 0.99
+    NUM_EPISODES = 500
 
     env = gym.make('CartPole-v1')
     cart_agent = CartAgent(learning_rate=LEARNING_RATE, gamma=GAMMA)
 
-    num_episodes = 500
-    for i_episode in range(num_episodes):
+    for i_episode in range(NUM_EPISODES):
         next_state = env.reset()
         env.render(mode='rgb_array')
 
